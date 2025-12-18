@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Защита Данных</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <header id="header" class="header">
+        <nav class="nav">
+            <a href="/" class="nav-link">Главная</a>
+            <a href="/pricing" class="nav-link">Тарифы</a>
+            <a href="/chat" class="nav-link">Чат</a>
+            <a href="/admin" class="nav-link admin-link" style="display:none;">Админ</a>
+            <a href="/security" class="nav-link security-link" style="display:none;">Безопасность</a>
+            <button id="logout" class="btn gradient-btn" style="display:none;">Выйти</button>
+        </nav>
+    </header>
+    <main id="content" class="content"></main>
+    <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-compat.js"></script>
+    <script src="https://unpkg.com/elliptic@6.5.4/dist/elliptic.min.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
