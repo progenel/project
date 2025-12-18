@@ -41,6 +41,7 @@ async function waitForElliptic() {
 
 class Rabin {
     constructor() {
+        // Генерируем простые числа Блюма (p = 3 mod 4), чтобы работала формула дешифровки
         this.p = this.generatePrime(64);
         this.q = this.generatePrime(64);
         while (this.p === this.q) this.q = this.generatePrime(64);
@@ -50,18 +51,25 @@ class Rabin {
     generatePrime(bits) {
         const max = 2 ** Math.min(bits, 20);
         let num = BigInt(Math.floor(Math.random() * max) | 1);
-        if (num < 3n) num = 3n;
-        if (num % 2n === 0n) num += 1n;
         
+        // Корректируем число, чтобы оно было 3 mod 4
+        // Если остаток 1, добавляем 2. Если остаток 3, оставляем.
+        // Остаток 0 или 2 невозможен для нечетных (кроме малых), но | 1 делает нечетным.
+        while (num % 4n !== 3n) {
+            num += 1n;
+        }
+
         let attempts = 0;
-        while (!this.isPrime(num) && attempts < 1000) {
-            num += 2n;
+        // Ищем ближайшее простое число с шагом 4, чтобы сохранить свойство 3 mod 4
+        while (!this.isPrime(num) && attempts < 2000) {
+            num += 4n;
             attempts++;
         }
         
-        if (attempts >= 1000) {
-            console.warn('Не удалось найти простое число, используем предустановленное');
-            return 61n;
+        if (attempts >= 2000) {
+            console.warn('Не удалось найти простое число Блюма, используем резервное');
+            // Резервное число (простое и 3 mod 4)
+            return 8831n; 
         }
         
         return num;
@@ -77,20 +85,6 @@ class Rabin {
             if (num % i === 0n) return false;
         }
         return true;
-    }
-    
-    encrypt(m) {
-        const msg = BigInt(m.charCodeAt(0));
-        return (msg * msg) % this.n;
-    }
-    
-    decrypt(c) {
-        const mp = this.modSqrt(c, this.p);
-        return mp;
-    }
-    
-    modSqrt(a, p) {
-        return a ** ((p + 1n) / 4n) % p;
     }
 }
 
@@ -223,7 +217,6 @@ function renderLogin(content) {
         const email = document.getElementById('loginEmail').value;
         const password = document.getElementById('loginPass').value;
         
-        // Отслеживание попыток входа
         if (!loginAttempts[email]) {
             loginAttempts[email] = { count: 0, lastAttempt: Date.now() };
         }
@@ -231,7 +224,6 @@ function renderLogin(content) {
         try {
             await auth.signInWithEmailAndPassword(email, password);
             
-            // Проверка блокировки
             const userDoc = await db.collection('users').doc(auth.currentUser.uid).get();
             if (userDoc.exists && userDoc.data().blocked) {
                 await auth.signOut();
@@ -239,7 +231,6 @@ function renderLogin(content) {
                 return;
             }
             
-            // Проверяем роль и перенаправляем соответственно
             const userRole = userDoc.data().role;
             if (userRole === 'admin') {
                 navigate('/admin');
@@ -249,19 +240,13 @@ function renderLogin(content) {
                 navigate('/pricing');
             }
             
-            // Сброс попыток при успешном входе
             loginAttempts[email] = { count: 0, lastAttempt: Date.now() };
         } catch (err) {
-            // Увеличиваем счетчик попыток
             loginAttempts[email].count++;
             loginAttempts[email].lastAttempt = Date.now();
             
-            console.log('Попытка входа №', loginAttempts[email].count, 'для', email);
-            
-            // Если 5 или больше попыток
             if (loginAttempts[email].count >= 5) {
                 try {
-                    // Создаем отчет для инженера безопасности
                     await db.collection('security_reports').add({
                         email: email,
                         attempts: loginAttempts[email].count,
@@ -269,40 +254,15 @@ function renderLogin(content) {
                         type: 'multiple_failed_logins',
                         status: 'pending'
                     });
-                    console.log('Отчет создан для', email);
                     alert('Обнаружено много неудачных попыток входа. Отчет отправлен службе безопасности.');
                 } catch (reportErr) {
                     console.error('Ошибка создания отчета:', reportErr);
                 }
             } else {
-                // Показываем обычную ошибку входа
                 alert('Ошибка входа: ' + err.message);
             }
         }
     };
-}
-
-async function createSecurityReport(email, attempts) {
-    const oneHourAgo = firebase.firestore.Timestamp.fromDate(new Date(Date.now() - 3600000));
-    const recent = await db.collection('security_reports')
-        .where('email', '==', email)
-        .where('type', '==', 'multiple_failed_logins')
-        .where('status', '==', 'pending')
-        .where('timestamp', '>', oneHourAgo)
-        .limit(1)
-        .get();
-    
-    if (recent.empty) {
-        await db.collection('security_reports').add({
-            email: email,
-            attempts: attempts,
-            timestamp: firebase.firestore.FieldValue.serverTimestamp(),
-            type: 'multiple_failed_logins',
-            status: 'pending'
-        });
-        return true;
-    }
-    return false;
 }
 
 async function renderPricing(content) {
@@ -311,22 +271,11 @@ async function renderPricing(content) {
     
     const doc = await db.collection('users').doc(user.uid).get();
     
-    // Проверяем роль - если админ или инженер, они могут пропустить тариф
     if (doc.exists) {
         const userRole = doc.data().role;
-        if (userRole === 'admin') {
-            navigate('/admin');
-            return;
-        }
-        if (userRole === 'engineer') {
-            navigate('/security');
-            return;
-        }
-        // Если уже есть тариф, идем в чат
-        if (doc.data().tariff) {
-            navigate('/chat');
-            return;
-        }
+        if (userRole === 'admin') return navigate('/admin');
+        if (userRole === 'engineer') return navigate('/security');
+        if (doc.data().tariff) return navigate('/chat');
     }
 
     content.innerHTML = `
@@ -400,7 +349,6 @@ async function subscribe(tariff, method) {
 
         if (method === 'Rabin' || method === 'both') {
             const rabin = new Rabin();
-            
             localStorage.setItem('rabinP', rabin.p.toString());
             localStorage.setItem('rabinQ', rabin.q.toString());
             await userRef.update({ rabinN: rabin.n.toString() });
@@ -464,15 +412,11 @@ async function renderChat(content) {
         if (doc.id !== user.uid) {
             const theirMethod = userData.encryptionMethod;
             let compatible = false;
-            if (myMethod === 'both' || theirMethod === 'both') {
-                compatible = true;
-            } else if (myMethod === theirMethod) {
-                compatible = true;
-            }
+            if (myMethod === 'both' || theirMethod === 'both') compatible = true;
+            else if (myMethod === theirMethod) compatible = true;
 
             const li = document.createElement('li');
-            li.textContent = usersCache[doc.id] + 
-                             (compatible ? '' : ' (несовместимый метод)');
+            li.textContent = usersCache[doc.id] + (compatible ? '' : ' (несовместимый метод)');
             li.style.cursor = compatible ? 'pointer' : 'not-allowed';
             li.style.opacity = compatible ? '1' : '0.5';
             li.style.padding = '12px';
@@ -510,7 +454,7 @@ async function startChat(recipientId, username, myMethod, recipientData) {
     }
 
     if (!recipientPublic) {
-        alert('Собеседник не имеет нужного публичного ключа.');
+        alert('Собеседник не настроил ключи для выбранного метода.');
         return;
     }
 
@@ -518,148 +462,178 @@ async function startChat(recipientId, username, myMethod, recipientData) {
     document.getElementById('backBtn').style.display = 'block';
     document.getElementById('usersList').style.display = 'none';
     document.getElementById('chatArea').style.display = 'block';
-    document.getElementById('messages').innerHTML = '<p style="text-align:center;color:#999;">Загрузка сообщений...</p>';
+    
+    const messagesDiv = document.getElementById('messages');
+    messagesDiv.innerHTML = '<p style="text-align:center;color:#999;">Загрузка сообщений...</p>';
 
-    if (window.chatListener) {
-        window.chatListener();
-        window.chatListener = null;
-    }
+    if (window.chatListener) window.chatListener();
 
     const ref = realtimeDb.ref(`chats/${currentChatId}`);
     
-    try {
-        const snapshot = await ref.once('value');
-        const messagesDiv = document.getElementById('messages');
-        messagesDiv.innerHTML = '';
-        
-        if (!snapshot.exists()) {
-            messagesDiv.innerHTML = '<p style="text-align:center;color:#999;">Начните общение! Напишите первое сообщение.</p>';
-        } else {
-            let messageCount = 0;
-            snapshot.forEach(childSnap => {
-                const msg = childSnap.val();
-                if (msg && msg.encrypted && msg.method) {
-                    displayMessage(msg);
-                    messageCount++;
-                }
-            });
-            
-            if (messageCount === 0) {
-                messagesDiv.innerHTML = '<p style="text-align:center;color:#999;">Нет сообщений. Напишите первое!</p>';
-            }
-        }
-    } catch (e) {
-        console.error('Ошибка загрузки истории:', e);
-        document.getElementById('messages').innerHTML = '<p style="text-align:center;color:#f00;">Ошибка загрузки истории</p>';
-    }
-    
-    const listener = ref.limitToLast(1).on('child_added', snap => {
+    const listener = ref.on('child_added', (snap) => {
         const msg = snap.val();
-        if (!msg || !msg.encrypted || !msg.method) return;
-        
-        const timestamp = msg.timestamp;
-        const now = Date.now();
-        
-        if (timestamp && (now - timestamp > 2000)) {
-            return;
+        if (msg && msg.encrypted) {
+            const loader = messagesDiv.querySelector('p');
+            if (loader && (loader.textContent.includes('Загрузка') || loader.textContent.includes('Начните общение'))) {
+                loader.remove();
+            }
+            displayMessage(msg);
         }
-        
-        displayMessage(msg);
     });
+
+    setTimeout(async () => {
+        const snap = await ref.once('value');
+        if (!snap.exists()) {
+            messagesDiv.innerHTML = '<p style="text-align:center;color:#999;">Начните общение! Напишите первое сообщение.</p>';
+        }
+    }, 2000);
     
     window.chatListener = () => ref.off('child_added', listener);
 }
 
 function displayMessage(msg) {
-    let decrypted = '[Не удалось расшифровать]';
-    try {
-        decrypted = decryptMessage(msg.encrypted, msg.method);
-    } catch (e) {
-        console.error('Ошибка расшифровки:', e);
-        decrypted = '[Ошибка: ' + e.message + ']';
-    }
-
     const messagesDiv = document.getElementById('messages');
-    
-    const placeholder = messagesDiv.querySelector('p[style*="text-align:center"]');
-    if (placeholder) {
-        placeholder.remove();
-    }
-
     const isMyMessage = msg.sender === auth.currentUser.uid;
     
+    let decryptedText;
+    try {
+        decryptedText = decryptMessage(msg.encrypted, msg.method);
+    } catch (e) {
+        decryptedText = "[Ошибка расшифровки]";
+    }
+
     const container = document.createElement('div');
     container.style.display = 'flex';
     container.style.flexDirection = 'column';
     container.style.alignItems = isMyMessage ? 'flex-end' : 'flex-start';
     container.style.marginBottom = '1rem';
     
-    const senderName = document.createElement('div');
-    senderName.style.fontSize = '0.75em';
-    senderName.style.color = '#666';
-    senderName.style.marginBottom = '4px';
-    senderName.style.marginLeft = isMyMessage ? '0' : '12px';
-    senderName.style.marginRight = isMyMessage ? '12px' : '0';
-    senderName.style.fontWeight = '600';
-    
-    if (isMyMessage) {
-        senderName.textContent = 'Вы';
-    } else {
-        senderName.textContent = recipientUsername || usersCache[msg.sender] || 'Собеседник';
-    }
-    
     const messageDiv = document.createElement('div');
-    messageDiv.classList.add('message', isMyMessage ? 'sent' : 'received');
-    messageDiv.style.maxWidth = '70%';
-    messageDiv.style.wordWrap = 'break-word';
-    messageDiv.textContent = decrypted;
+    messageDiv.className = `message ${isMyMessage ? 'sent' : 'received'}`;
+    messageDiv.style.padding = '10px 15px';
+    messageDiv.style.borderRadius = '15px';
+    messageDiv.style.maxWidth = '80%';
+    messageDiv.style.background = isMyMessage ? '#667eea' : '#fff';
+    messageDiv.style.color = isMyMessage ? '#fff' : '#2d3748';
+    messageDiv.style.boxShadow = '0 2px 5px rgba(0,0,0,0.1)';
     
-    const timeDiv = document.createElement('div');
-    timeDiv.style.fontSize = '0.65em';
-    timeDiv.style.color = isMyMessage ? 'rgba(255,255,255,0.8)' : 'rgba(255,255,255,0.8)';
-    timeDiv.style.marginTop = '4px';
-    timeDiv.style.textAlign = 'right';
+    messageDiv.textContent = decryptedText;
     
-    if (msg.timestamp) {
-        const date = new Date(msg.timestamp);
-        const time = date.toLocaleTimeString('ru-RU', { 
-            hour: '2-digit', 
-            minute: '2-digit' 
-        });
-        const dateStr = date.toLocaleDateString('ru-RU', {
-            day: '2-digit',
-            month: '2-digit'
-        });
-        
-        const today = new Date();
-        const isToday = date.toDateString() === today.toDateString();
-        
-        timeDiv.textContent = isToday ? time : `${dateStr} ${time}`;
-    } else {
-        timeDiv.textContent = 'Отправка...';
-    }
-    
-    messageDiv.appendChild(timeDiv);
-    container.appendChild(senderName);
     container.appendChild(messageDiv);
-    
     messagesDiv.appendChild(container);
-    container.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+}
+
+// ГЛАВНАЯ ФУНКЦИЯ ШИФРОВАНИЯ
+function encryptMessage(msg, method) {
+    if (method === 'ECC') {
+        if (!ec) throw new Error("Библиотека ECC не загружена");
+        const pub = ec.keyFromPublic(recipientPublic, 'hex');
+        const ephemeral = ec.genKeyPair();
+        const shared = ephemeral.derive(pub.getPublic()).toString(16);
+        
+        // 1. Преобразуем текст в UTF-8 байты, чтобы не потерять кириллицу
+        const utf8Msg = unescape(encodeURIComponent(msg));
+        let encrypted = '';
+        
+        for (let i = 0; i < utf8Msg.length; i++) {
+            const charCode = utf8Msg.charCodeAt(i);
+            const keyChar = parseInt(shared.substr((i * 2) % shared.length, 2), 16) || 0x42;
+            encrypted += String.fromCharCode(charCode ^ keyChar);
+        }
+        
+        // 2. Кодируем результат (бинарную строку) в Base64
+        return ephemeral.getPublic('hex') + ':' + btoa(encrypted);
+    }
+
+    if (method === 'Rabin') {
+        const n = BigInt(recipientPublic);
+        let encryptedParts = [];
+        // Шифруем каждый символ отдельно, чтобы не переполнить BigInt и не потерять длину
+        for (let i = 0; i < msg.length; i++) {
+            const m = BigInt(msg.charCodeAt(i));
+            const c = (m * m) % n;
+            encryptedParts.push(c.toString());
+        }
+        return encryptedParts.join(',');
+    }
+    throw new Error("Метод не поддерживается");
+}
+
+// ГЛАВНАЯ ФУНКЦИЯ ДЕШИФРОВКИ
+function decryptMessage(encrypted, method) {
+    try {
+        if (method === 'ECC') {
+            const privHex = localStorage.getItem('privateKey');
+            if (!privHex) return "[Ошибка: Ваш приватный ключ не найден]";
+            
+            const [ephemeralPubHex, encryptedBase64] = encrypted.split(':');
+            const keyPair = ec.keyFromPrivate(privHex, 'hex');
+            const ephemeralPub = ec.keyFromPublic(ephemeralPubHex, 'hex');
+            const shared = keyPair.derive(ephemeralPub.getPublic()).toString(16);
+            
+            // 1. Декодируем из Base64 обратно в "бинарную" строку
+            const rawData = atob(encryptedBase64);
+            let decryptedUtf8 = '';
+            
+            for (let i = 0; i < rawData.length; i++) {
+                const charCode = rawData.charCodeAt(i);
+                const keyChar = parseInt(shared.substr((i * 2) % shared.length, 2), 16) || 0x42;
+                decryptedUtf8 += String.fromCharCode(charCode ^ keyChar);
+            }
+            
+            // 2. Преобразуем UTF-8 байты обратно в читаемый текст (кириллицу)
+            return decodeURIComponent(escape(decryptedUtf8));
+        }
+
+        if (method === 'Rabin') {
+            const pStr = localStorage.getItem('rabinP');
+            const qStr = localStorage.getItem('rabinQ');
+            if (!pStr || !qStr) return "[Ошибка: Ваши ключи Rabin отсутствуют]";
+
+            const p = BigInt(pStr);
+            const q = BigInt(qStr);
+            const n = p * q;
+            const parts = encrypted.split(',');
+            
+            let result = '';
+            for (let cStr of parts) {
+                const c = BigInt(cStr);
+                // Находим корни (для простых чисел вида 3 mod 4)
+                let m = (c ** ((p + 1n) / 4n)) % p;
+                // Проверяем, подходит ли корень (Китайская теорема об остатках упрощенно)
+                if ((m * m) % n !== c % n) {
+                    m = (c ** ((q + 1n) / 4n)) % q;
+                }
+                result += String.fromCharCode(Number(m));
+            }
+            return result;
+        }
+    } catch (e) {
+        console.error("Критическая ошибка дешифрования:", e);
+        return "[Ошибка расшифровки]";
+    }
+    return "[Неизвестный метод]";
 }
 
 function sendMessage() {
     const input = document.getElementById('messageInput');
-    const msg = input.value.trim();
-    if (!msg) return;
+    const msgText = input.value.trim();
+    if (!msgText || !activeEncryptionMethod || !recipientPublic) {
+        alert('Невозможно отправить сообщение: проверьте метод шифрования');
+        return;
+    }
 
     try {
-        const encrypted = encryptMessage(msg, activeEncryptionMethod);
+        const encryptedData = encryptMessage(msgText, activeEncryptionMethod);
+        
         realtimeDb.ref(`chats/${currentChatId}`).push({
-            encrypted: encrypted,
+            encrypted: encryptedData,
             method: activeEncryptionMethod,
             sender: auth.currentUser.uid,
             timestamp: firebase.database.ServerValue.TIMESTAMP
         });
+        
         input.value = '';
     } catch (e) {
         alert('Ошибка шифрования: ' + e.message);
@@ -675,92 +649,6 @@ document.addEventListener('keypress', (e) => {
         }
     }
 });
-
-function encryptMessage(msg, method) {
-    if (method === 'ECC') {
-        if (!ec) throw new Error("Библиотека ECC не загружена");
-        if (!recipientPublic) throw new Error("Нет публичного ключа ECC у собеседника");
-        
-        const pub = ec.keyFromPublic(recipientPublic, 'hex');
-        const ephemeral = ec.genKeyPair();
-        const shared = ephemeral.derive(pub.getPublic()).toString(16);
-        
-        let encrypted = '';
-        for (let i = 0; i < msg.length; i++) {
-            const charCode = msg.charCodeAt(i);
-            const keyChar = parseInt(shared.substr((i * 2) % shared.length, 2), 16);
-            encrypted += String.fromCharCode(charCode ^ keyChar);
-        }
-        
-        return ephemeral.getPublic('hex') + ':' + btoa(encrypted);
-    }
-
-    if (method === 'Rabin') {
-        if (!recipientPublic) throw new Error("Нет публичного ключа Rabin у собеседника");
-        
-        const n = BigInt(recipientPublic);
-        let encryptedParts = [];
-        for (let char of msg) {
-            const m = BigInt(char.charCodeAt(0));
-            const c = (m * m) % n;
-            encryptedParts.push(c.toString());
-        }
-        return encryptedParts.join(',');
-    }
-
-    throw new Error("Неизвестный метод шифрования: " + method);
-}
-
-function decryptMessage(encrypted, method) {
-    if (method === 'ECC') {
-        const priv = localStorage.getItem('privateKey');
-        if (!priv) return "[Нет ключа ECC]";
-        
-        try {
-            const [ephemeralPub, encryptedData] = encrypted.split(':');
-            const keyPair = ec.keyFromPrivate(priv, 'hex');
-            const ephemeral = ec.keyFromPublic(ephemeralPub, 'hex');
-            const shared = keyPair.derive(ephemeral.getPublic()).toString(16);
-            
-            const encryptedMsg = atob(encryptedData);
-            let decrypted = '';
-            for (let i = 0; i < encryptedMsg.length; i++) {
-                const charCode = encryptedMsg.charCodeAt(i);
-                const keyChar = parseInt(shared.substr((i * 2) % shared.length, 2), 16);
-                decrypted += String.fromCharCode(charCode ^ keyChar);
-            }
-            return decrypted;
-        } catch (e) {
-            return "[Ошибка ECC: " + e.message + "]";
-        }
-    }
-
-    if (method === 'Rabin') {
-        const p = BigInt(localStorage.getItem('rabinP') || '0');
-        const q = BigInt(localStorage.getItem('rabinQ') || '0');
-        
-        if (p === 0n || q === 0n) return "[Нет ключей Rabin в localStorage]";
-
-        const n = p * q;
-        let decrypted = '';
-        const parts = encrypted.split(',');
-        
-        for (let cStr of parts) {
-            const c = BigInt(cStr);
-            let m = (c ** ((p + 1n) / 4n)) % p;
-            
-            if ((m * m) % n !== c % n) {
-                m = (c ** ((q + 1n) / 4n)) % q;
-            }
-            
-            decrypted += String.fromCharCode(Number(m % 256n));
-        }
-        
-        return decrypted;
-    }
-
-    return "[Неизвестный метод: " + method + "]";
-}
 
 // ПАНЕЛЬ БЕЗОПАСНОСТИ (инженер)
 async function renderSecurity(content) {
@@ -794,7 +682,6 @@ async function renderSecurity(content) {
             return;
         }
         
-        // Сортируем на клиенте
         const reports = [];
         snapshot.forEach(doc => {
             reports.push({ id: doc.id, data: doc.data() });
@@ -842,13 +729,11 @@ async function dismissReport(reportId) {
 
 async function reportToAdmin(email, reportId) {
     try {
-        // Находим пользователя по email
         const usersSnapshot = await db.collection('users').where('email', '==', email).get();
         
         if (!usersSnapshot.empty) {
             const userId = usersSnapshot.docs[0].id;
             
-            // Создаем запрос на блокировку для админа
             await db.collection('admin_requests').add({
                 userId: userId,
                 email: email,
@@ -858,7 +743,6 @@ async function reportToAdmin(email, reportId) {
                 timestamp: firebase.firestore.FieldValue.serverTimestamp()
             });
             
-            // Помечаем отчет как отправленный админу
             await db.collection('security_reports').doc(reportId).update({
                 status: 'reported'
             });
@@ -896,7 +780,6 @@ async function renderAdmin(content) {
         </div>
     `;
     
-    // Загружаем запросы от инженеров
     const requestsDiv = document.getElementById('adminRequests');
     try {
         const requestsSnapshot = await db.collection('admin_requests')
@@ -1020,6 +903,7 @@ if (typeof elliptic !== 'undefined') {
 auth.onAuthStateChanged(() => renderPage(location.pathname));
 renderPage(location.pathname);
 
+// Экспорт для доступа из HTML
 window.navigate = navigate;
 window.subscribe = subscribe;
 window.sendMessage = sendMessage;
